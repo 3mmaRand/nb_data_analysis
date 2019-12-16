@@ -1,0 +1,378 @@
+---
+title: "Comparing Gene Expression Patterns between Neuroblastoma Cell Lines"
+author: "Chloe Brook"
+output: 
+  html_document:
+    theme: simplex
+    toc: true
+    toc_float: true
+---
+```{r setup, include = FALSE}
+# web link names
+harenza_link <- "https://www.nature.com/articles/sdata201733"
+tonini_link <- "https://www.ncbi.nlm.nih.gov/pubmed/8996128"
+corrigendum_link <- "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5716011/"
+lesions_link <- "https://www.nature.com/articles/sdata201733/tables/4"
+accession_link <- "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSe89413"
+nature_link <- "https://www.nature.com/articles/nmeth.4346"
+repos_link <- "https://cloud.r-project.org"
+
+# install and load required packages using Pacman
+if (!require(pacman)) install.packages("pacman", repos = repos_link)
+if (!require(ggplot2)) pacman::p_load(ggplot2)
+if (!require(magrittr)) pacman::p_load(magrittr)
+if (!require(kableExtra)) pacman::p_load(kableExtra)
+if (!require(rvest)) pacman::p_load(rvest)
+if (!require(dplyr)) pacman::p_load(dplyr)
+if (!require(tidyr)) pacman::p_load(tidyr)
+```
+# Data Introduction
+
+* Whole-transcriptome RNA-Seq data for 38 neuroblastoma cell lines 
+and 3 non-neuroblastoma cell lines 
+(*RPE-1, human fetal brain tissue, and rhabdomyosarcoma*) 
+was published by [Harenza et al. (2017)](`r harenza_link`).
+* Table containing processed **FPKM** data for each cell line was
+provided: will use this to look at expression of different genes in
+each cell line.
+
+> **FPKM**: Gene fragments per kilobase of exons per million reads.  
+  Used as a **measure of relative gene expression**.
+
+* **MYCN amplification status** of each cell line was also provided
+in a separate text file.
+* The MYCN gene encodes the N-Myc helix-loop-helix protein. 
+* Elevated MYCN gene copy number in neuroblastoma tumours is a known
+indicator of poor prognosis [(Tonini et al. 1997)](`r tonini_link`)  
+
+**NOTE**: a [corrigendum](`r corrigendum_link`) to the dataset was
+issued in December 2017, stating that the NB-16 cell line had been
+incorrectly labelled and was actually a rhabdomyosarcoma cell line
+(RD). Data sets have been modified to reflect this.
+
+## Aims
+
+* Study how gene expression varies between different cell lines used
+in neuroblastoma research, focusing on the 
+**differences between MYCN-amplified and non-amplified cell lines**.
+* Compare **mean FPKM levels** of all genes in each cell line to see
+whether **overall levels of gene expression vary between cell lines**.
+* Look at the **expression patterns of individual genes** across cell
+lines.
+* Look at cell lines with **similar patterns of overall gene expression**,
+and highlight outlying cell lines.
+
+# Cell Lines
+Shown below is a table summarising the genetic lesion profiles of 
+each neuroblastoma cell line sequenced by Harenza et al. Each genetic
+aberration contained in the columns is known to be significant in the
+disease phenotype of neuroblastoma.  
+**MYCN-amplified** cell lines are coloured in **red**.
+```{r lesion data import, include = FALSE}
+# read in html page containing gene lesion data for each cell line
+lesions_page <- read_html(lesions_link)
+
+# scrape gene lesion data from html table
+gene_lesions <- lesions_page %>% 
+  html_nodes(".last-table")  %>%
+  html_table()
+
+# extract data frame from gene_lesions list 
+lesion_df <- gene_lesions[[1]]
+
+# change NB16 cell line title to RD
+if(lesions_link == "https://www.nature.com/articles/sdata201733/tables/4") {
+  lesion_df$`Cell Line` <- gsub("^NB-16$", "RD", lesion_df$`Cell Line`)}
+```
+
+```{r lesion table, echo = FALSE}
+# specify rows containing mycn-amplified cell lines
+mycn_rows <- grep("^Amplified$", lesion_df$`MYCN status`)
+
+# display gene lesion data table
+kable(lesion_df) %>%
+  kable_styling(bootstrap_options = 
+                c("striped", "condensed", "responsive")) %>%
+    row_spec(mycn_rows, color = "white", background = "#D7261E")
+```
+
+# FPKM Data
+```{r import, include = FALSE}
+# reading in FPKM data file from GEO accession GSE89413
+fpkm_file <- "../Data/GSE89413_2016-10-30-NBL-cell-line-STAR-fpkm.txt"
+fpkm      <- read.delim(fpkm_file)
+
+# replace NB-16 cell line with RD, as in corrigendum 
+# if function is used to make sure only file with RD error is edited
+if (fpkm_file == "../Data/GSE89413_2016-10-30-NBL-cell-line-STAR-fpkm.txt") {
+colnames(fpkm) <- gsub("^NB16$", "RD", colnames(fpkm))}
+
+# remove genes that aren't expressed in any cell lines
+skip_col <- -1                  # skip non-numeric col in fpkm df
+thresh <- fpkm[,skip_col] > 0   # select genes with FPKM > 0
+keep <- rowSums(thresh) >= 1    # select genes with FPKM > 0 in ALL cell lines
+fpkm_clean <- fpkm[keep,]       # form df with only expressed genes
+```
+
+```{r set fpkm head, include = FALSE}
+# make FPKM data preview table
+n_rows <- 5
+n_cols <- 7
+fpkm_prev <- head(fpkm_clean, n = n_rows)[1:n_cols]
+
+# remove row numbers from table
+row.names(fpkm_prev) <- NULL
+```
+The processed FPKM table containing relative gene expression data
+for each cell line can be found under
+[GEO accession GSE89413](`r accession_link`)  
+Shown below is a preview of the data, with FPKM values for
+**`r dim(fpkm_prev)[1]`** genes in **`r dim(fpkm_prev)[2] - 1`**
+neuroblastoma cell lines:
+
+```{r fpkm preview table, echo = FALSE}
+# display fpkm data preview table
+kable(fpkm_prev) %>%
+  kable_styling(bootstrap_options = 
+    c("striped", "hover", "condensed", "responsive"))
+```
+
+The full file contains FPKM data for **`r dim(fpkm_clean)[1]`** genes
+(after removal of **`r dim(fpkm)[1] - dim(fpkm_clean)[1]`** genes
+that weren't expressed) in **`r dim(fpkm_clean)[2] - 1`** cell lines.  
+These cell lines are:  
+`r colnames(fpkm_clean)[2:c(length(fpkm_clean))]`.  
+
+## Mean FPKM Levels of Cell Lines
+The average FPKM values for all genes in each cell line were
+calculated and plotted in the bar chart below. Cell lines were
+coloured by their MYCN amplification status, to see if this had an
+effect on overall levels of gene expression within the cell line.
+```{r barchart prep, include = FALSE}
+# set string containing mean FPKM values for each cell line
+fpkm_means <- colMeans(fpkm_clean[,skip_col])
+
+# set string containing cell line names
+cell_line_names <- colnames(fpkm_clean[,skip_col])
+
+# set string with MYCN FPKM value for each cell line
+mycn_rownum <- grep("^MYCN$", fpkm_clean$GeneID)
+mycn_fpkm_vals <- fpkm_clean[mycn_rownum,]
+
+# remove row names & gather cell line columns into one column
+mycn_gather <- gather(mycn_fpkm_vals, key = "cell_line", value = "mycn_fpkm", skip_col)
+
+# select mycn_fpkm column
+mycn_fpkm_vals <- mycn_gather[,3]
+
+# make data frame with cell lines alongside their mean fpkm values
+fpkm_mean_df <- cbind(cell_line_names, fpkm_means, mycn_fpkm_vals) %>% 
+  as.data.frame()
+
+# set column names for fpkm_mean_df
+colnames(fpkm_mean_df) <- c("cell_line", "mean_fpkm", "mycn_fpkm")
+
+# import mycn amplification status data file
+mycn_file <- "../data/2016-11-17-CellLine-MYCN-status.txt"
+mycn_amp  <- read.table(mycn_file, header = T)
+
+# change NB16 cell line title to RD in mycn_amp table
+if(mycn_file == "../data/2016-11-17-CellLine-MYCN-status.txt") {
+  mycn_amp$CellLine <- gsub("^NB16$", "RD", mycn_amp$CellLine)}
+
+# change MYCN_amp "cell line" column name to merge with FPKM file
+colnames(mycn_amp)[1] <- "cell_line"
+
+# merge fpkm_mean_df with mycn_amp 
+fpkm_mycn_df <- merge(fpkm_mean_df, mycn_amp, 
+                      by = "cell_line", 
+                      sort = F)
+```
+
+```{r barchart plot, echo = FALSE}
+ggplot(fpkm_mycn_df, aes(x = reorder(cell_line_names, mycn_fpkm_vals), y = fpkm_means, fill = Status)) +
+  geom_col() +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(x = "Cell Line", y = "Mean FPKM", fill = "MYCN Status") +
+  scale_fill_manual(values = c("#d9230f", "#336699"))
+```
+
+## Gene Expression Heatmap
+The 30 most abundant genes across all of the cell lines were selected,
+and the FPKM values for these genes in each cell line were mapped in
+the heatmap below. FPKM values were logged to base 10, to highlight
+differences in gene expression levels.
+```{r heatmap prep, include = FALSE}
+# sum FPKM of each gene across all cell lines
+# rowsums sums values in each row, cbind function adds "total" column
+gene_sum <- cbind(fpkm_clean, total = rowSums(fpkm_clean[-1]))
+
+# Select 30 most abundant genes using top_n function
+top_genes <- top_n(gene_sum, 30, total)
+
+# gather cell lines and fpkm values into separate columns for ggplot
+top_gene_tidy <- gather(data = top_genes, "cell_line", "fpkm", skip_col)
+
+# log fpkm values to accentuate differences 
+top_gene_log <- top_gene_tidy
+top_gene_log$fpkm <- log10(top_gene_tidy$fpkm)
+
+# add mycn fpkm column to allow ordering of cell lines by MYCN levels
+#top_gene_log <- cbind(top_gene_log, mycn_fpkm = mycn_fpkm_vals)
+```
+
+```{r heatmap plot, echo = FALSE}
+# make heatmap with logged FPKM values
+ggplot (top_gene_log) +
+  geom_tile (aes(x = cell_line, y = GeneID, fill = fpkm)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  scale_fill_gradient(name = expression(paste(log[10], FPKM)), low = "#280502", 
+                      high = "#ff523f") +
+  labs(x = "Cell Line", y = "Gene ID")
+```
+
+* Two genes show visibly higher FPKM values against the other genes:
+**RPPH1** and **RMRP**
+    + Ribonuclease P RNA Component H1 (RPPH1)
+    + RNA Component Of Mitochondrial RNA Processing Endoribonuclease
+    (RMRP)
+* The gene DDX1 shows perhaps the most varied pattern of expression
+across the cell lines, with low FPKM values in some cell lines but
+very high FPKM values in others.
+    + DEAD-Box Helicase 1 (DDX1) 
+* Overall, the top 30 most expressed genes fall under the categories 
+of: ...........
+
+# Principal Component Analysis
+Principal component analysis (PCA) is an unsupervised machine 
+learning method used to **simplify data with lots of variables** into 
+smaller dimensions called **'principal components'**.  
+Important features of the data are retained, and can be used to see
+whether variance is similar between data points 
+(cell lines in this case).
+
+A more thorough explanation of PCA can be found in 
+[this Nature Methods article](`r nature_link`).
+
+```{r pca data prep, include = FALSE}
+# PCA requires data transposed from fpkm file for analysis
+# transpose data frame & convert matrix produced by t() to data frame
+fpkmflip           <- fpkm_clean[2:c(length(fpkm_clean))] %>% 
+                        t %>% 
+                        data.frame
+# title rows with cell lines
+fpkmflip$cell_line <- row.names(fpkmflip) 
+```
+
+## PCA plot
+```{r pca analysis, include = FALSE}
+# run PCA on FPKM data
+fpkm_pca <- prcomp(fpkmflip[-length(fpkmflip)])
+
+# label PCA data for plotting
+fpkm_pca_lab <- data.frame(fpkm_pca$x, cell_line = fpkmflip$cell_line)
+
+# merge MYCN status of cell lines with PCA data
+fpkm_pca_lab <- merge(fpkm_pca_lab, mycn_amp, by = "cell_line")
+```
+
+```{r pca plot, echo = FALSE, fig.width = 10, fig.height = 6}
+# plot PCA data using ggplot2
+ggplot(fpkm_pca_lab, aes(x = PC1, y = PC2, colour = Status)) +
+  geom_text(aes(label = cell_line), size = 4) +
+  scale_color_manual(name = "MYCN Status", values = c("#d9230f", "#336699")) +
+  theme_minimal() +
+  theme(legend.title = element_text(size = 12), 
+        legend.text = element_text(size = 10))
+```
+
+# Conclusions
+The PCA plot highlights cell lines with patterns of gene expression that differ
+greatly from others.
+
+* SK-N-AS
+* KELLY
+* LAN-6
+* RD
+
+It is notable that the cell lines furthest from centre are non-MYCN
+amplified. The cancerous phenotypes of these cell lines may perhaps
+be caused by other large aberrations in gene expression.  
+As RD is a rhabdomyosarcoma cell line, it makes sense that its gene
+expression differs from the neuroblastoma cell lines.
+
+**What makes these cell lines different from the others?**
+
+## Further Work
+
+* Investigate genes that are differentially expressed in the
+outlying cell lines on the PCA plot.
+* Study pathways involved in neuroblastoma disease and drug
+resistance, and make PCA plots to investigate expression of these
+genes specifically.
+
+# Bibliography
+Harenza, J.L., Diamond, M.A., Adams, R.N., Song, M.M., Davidson,
+H.L., Hart, L.S., Dent, M.H., Fortina, P., Reynolds, C.P. and Maris,
+J.M., 2017. Transcriptomic profiling of 39 commonly-used
+neuroblastoma cell lines. Scientific data, 4, p.170033.  
+
+Tonini, G.P., Boni, L., Pession, A. and Rogers, D., 1997. MYCN 
+Oncogene Amplification in Neuroblastoma is Associated With Worse 
+Prognosis, Except in Stage 4s: The Italian Experience With 295 
+Children. Journal of Clinical Oncology, 15(1), pp.85-93.  
+
+Lever, J., Krzywinski, M. and Altman, N., 2017. 
+Points of significance: Principal component analysis.
+
+# Package References
+R Core Team (2018). R: A language and environment for statistical
+computing. R Foundation for Statistical Computing, Vienna, Austria.  
+URL https://www.R-project.org/.
+
+JJ Allaire, Yihui Xie, Jonathan McPherson, Javier Luraschi, Kevin Ushey,
+Aron Atkins, Hadley Wickham, Joe Cheng and Winston Chang (2018).
+rmarkdown: Dynamic Documents for R.  
+R package version 1.10.  
+https://CRAN.R-project.org/package=rmarkdown
+
+Yihui Xie (2018). knitr: A General-Purpose Package for Dynamic Report
+Generation in R.  
+R package version 1.20.
+
+Yihui Xie (2015) Dynamic Documents with R and knitr. 2nd edition.
+Chapman and Hall/CRC. ISBN 978-1498716963
+
+Yihui Xie (2014) knitr: A Comprehensive Tool for Reproducible Research
+in R. In Victoria Stodden, Friedrich Leisch and Roger D. Peng, editors,
+Implementing Reproducible Computational Research. Chapman and Hall/CRC.
+ISBN 978-1466561595
+
+H. Wickham. ggplot2: Elegant Graphics for Data Analysis.
+Springer-Verlag New York, 2016.  
+
+Stefan Milton Bache and Hadley Wickham (2014). 
+magrittr:A Forward-Pipe Operator for R.   
+R package version 1.5.  
+https://CRAN.R-project.org/package=magrittr
+
+Rinker, T. W. & Kurkiewicz, D. (2017).
+pacman: Package Management for R. version 0.4.6.
+University at Buffalo. Buffalo, New York.  
+http://github.com/trinker/pacman
+
+Hadley Wickham (2016). 
+rvest: Easily Harvest (Scrape) Web Pages.  
+R package version 0.3.2.  
+https://CRAN.R-project.org/package=rvest
+
+Hadley Wickham and Lionel Henry (2018). tidyr: Easily Tidy Data
+with 'spread()' and 'gather()' Functions.  
+R package version 0.8.1.  
+https://CRAN.R-project.org/package=tidyr
+
+Hadley Wickham, Romain Fran?ois, Lionel Henry and Kirill M?ller
+(2018). dplyr: A Grammar of Data Manipulation.  
+R package version 0.7.7.  
+https://CRAN.R-project.org/package=dplyr
